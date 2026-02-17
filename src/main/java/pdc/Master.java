@@ -60,12 +60,16 @@ public class Master {
         }
     }
 
-    // Registry of known workers and their last seen timestamps
     private final ConcurrentMap<String, AtomicLong> workerLastSeen = new ConcurrentHashMap<>();
     // Global task state so reconciliation can reassign work from failed workers
     private BlockingQueue<Task> taskQueueGlobal = new LinkedBlockingQueue<>();
     private final ConcurrentMap<Integer, TaskLease> inFlightGlobal = new ConcurrentHashMap<>();
     private final AtomicInteger remainingTasksGlobal = new AtomicInteger(0);
+
+    // Enhanced fault tolerance tracking
+    private final ConcurrentMap<Integer, Integer> taskReassignmentCount = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Integer> workerFailureCount = new ConcurrentHashMap<>();
+    private static final int DEEP_REASSIGNMENT_LIMIT = 5;
 
     /**
      * Entry point for a distributed computation.
@@ -103,6 +107,8 @@ public class Master {
         taskQueueGlobal = new LinkedBlockingQueue<>();
         inFlightGlobal.clear();
         remainingTasksGlobal.set(0);
+        taskReassignmentCount.clear();
+        workerFailureCount.clear();
 
         BlockingQueue<Task> taskQueue = taskQueueGlobal;
         ConcurrentMap<Integer, TaskLease> inFlight = inFlightGlobal;
@@ -123,11 +129,17 @@ public class Master {
                 if (heartbeatAge > TASK_TIMEOUT_MS) {
                     // Timeout detected: reassign the task and let another worker retry.
                     if (inFlight.remove(lease.task.id, lease)) {
-                        if (lease.task.attempts.incrementAndGet() <= MAX_ATTEMPTS) {
+                        // Track reassignment depth
+                        int reassignCount = taskReassignmentCount.getOrDefault(lease.task.id, 0);
+                        if (reassignCount < DEEP_REASSIGNMENT_LIMIT) {
+                            taskReassignmentCount.put(lease.task.id, reassignCount + 1);
                             taskQueue.offer(lease.task);
                         } else {
                             remainingTasks.decrementAndGet();
                         }
+
+                        // Track worker failures for circuit breaking
+                        workerFailureCount.compute(lease.workerId, (k, v) -> (v == null ? 1 : v + 1));
                     }
                 }
             }
@@ -182,6 +194,8 @@ public class Master {
         taskQueueGlobal.clear();
         inFlightGlobal.clear();
         remainingTasksGlobal.set(0);
+        taskReassignmentCount.clear();
+        workerFailureCount.clear();
         return result;
     }
 
@@ -298,15 +312,19 @@ public class Master {
     }
 
     private void reassignTasksForWorker(String workerId) {
+        List<Integer> toRemove = new ArrayList<>();
         for (ConcurrentMap.Entry<Integer, TaskLease> entry : inFlightGlobal.entrySet()) {
             TaskLease lease = entry.getValue();
             if (lease != null && workerId.equals(lease.workerId)) {
                 if (inFlightGlobal.remove(entry.getKey(), lease)) {
-                    if (lease.task.attempts.incrementAndGet() <= MAX_ATTEMPTS) {
+                    int reassignCount = taskReassignmentCount.getOrDefault(lease.task.id, 0);
+                    if (reassignCount < DEEP_REASSIGNMENT_LIMIT) {
+                        taskReassignmentCount.put(lease.task.id, reassignCount + 1);
                         taskQueueGlobal.offer(lease.task);
                     } else {
                         remainingTasksGlobal.decrementAndGet();
                     }
+                    toRemove.add(entry.getKey());
                 }
             }
         }

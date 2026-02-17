@@ -24,34 +24,18 @@ public class Message {
     /**
      * Converts the message to a byte stream for network transmission.
      * Students must implement their own framing (e.g., length-prefixing).
+     * This version includes length-prefix to handle TCP fragmentation properly.
      */
     public byte[] pack() {
         try (java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
                 java.io.DataOutputStream out = new java.io.DataOutputStream(baos)) {
-            byte[] magicBytes = (magic == null ? "" : magic).getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            out.writeInt(magicBytes.length);
-            out.write(magicBytes);
-
+            // Write message fields efficiently
+            writeString(out, magic == null ? "" : magic);
             out.writeInt(version);
-
-            byte[] typeBytes = (type == null ? "" : type).getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            out.writeInt(typeBytes.length);
-            out.write(typeBytes);
-
-            byte[] senderBytes = (sender == null ? "" : sender).getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            out.writeInt(senderBytes.length);
-            out.write(senderBytes);
-
-            byte[] messageTypeBytes = (messageType == null ? "" : messageType)
-                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            out.writeInt(messageTypeBytes.length);
-            out.write(messageTypeBytes);
-
-            byte[] studentIdBytes = (studentId == null ? "" : studentId)
-                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            out.writeInt(studentIdBytes.length);
-            out.write(studentIdBytes);
-
+            writeString(out, type == null ? "" : type);
+            writeString(out, sender == null ? "" : sender);
+            writeString(out, messageType == null ? "" : messageType);
+            writeString(out, studentId == null ? "" : studentId);
             out.writeLong(timestamp);
 
             byte[] payloadBytes = (payload == null ? new byte[0] : payload);
@@ -59,66 +43,67 @@ public class Message {
             out.write(payloadBytes);
 
             out.flush();
-            return baos.toByteArray();
+            byte[] frameData = baos.toByteArray();
+
+            // Wrap with length prefix for TCP fragmentation handling
+            java.io.ByteArrayOutputStream wrapper = new java.io.ByteArrayOutputStream();
+            java.io.DataOutputStream wrapOut = new java.io.DataOutputStream(wrapper);
+            wrapOut.writeInt(frameData.length);
+            wrapOut.write(frameData);
+            wrapOut.flush();
+            return wrapper.toByteArray();
         } catch (java.io.IOException e) {
             throw new RuntimeException("Failed to pack Message", e);
         }
     }
 
+    private static void writeString(java.io.DataOutputStream out, String str) throws java.io.IOException {
+        byte[] bytes = str.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeShort(bytes.length);
+        out.write(bytes);
+    }
+
+    private static String readString(java.io.DataInputStream in) throws java.io.IOException {
+        int len = in.readShort();
+        if (len < 0 || len > 4096)
+            throw new java.io.IOException("Invalid string length");
+        byte[] bytes = new byte[len];
+        in.readFully(bytes);
+        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     /**
      * Reconstructs a Message from a byte stream.
+     * Handles TCP fragmentation by reading frame length first.
      */
     public static Message unpack(byte[] data) {
-        if (data == null) {
+        if (data == null || data.length < 4) {
             return null;
         }
         try (java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(data);
                 java.io.DataInputStream in = new java.io.DataInputStream(bais)) {
+
+            // Skip frame length prefix (already extracted by socket reader)
+            if (data.length > 4) {
+                in.readInt(); // Skip the length prefix we added in pack()
+            }
+
             Message msg = new Message();
-            int magicLen = in.readInt();
-            if (magicLen < 0 || magicLen > 1024)
-                return null;
-            byte[] magicBytes = new byte[magicLen];
-            in.readFully(magicBytes);
-            msg.magic = new String(magicBytes, java.nio.charset.StandardCharsets.UTF_8);
 
+            msg.magic = readString(in);
             msg.version = in.readInt();
-
-            int typeLen = in.readInt();
-            if (typeLen < 0 || typeLen > 1024)
-                return null;
-            byte[] typeBytes = new byte[typeLen];
-            in.readFully(typeBytes);
-            msg.type = new String(typeBytes, java.nio.charset.StandardCharsets.UTF_8);
-
-            int senderLen = in.readInt();
-            if (senderLen < 0 || senderLen > 1024)
-                return null;
-            byte[] senderBytes = new byte[senderLen];
-            in.readFully(senderBytes);
-            msg.sender = new String(senderBytes, java.nio.charset.StandardCharsets.UTF_8);
-
-            int messageTypeLen = in.readInt();
-            if (messageTypeLen < 0 || messageTypeLen > 1024)
-                return null;
-            byte[] messageTypeBytes = new byte[messageTypeLen];
-            in.readFully(messageTypeBytes);
-            msg.messageType = new String(messageTypeBytes, java.nio.charset.StandardCharsets.UTF_8);
-
-            int studentIdLen = in.readInt();
-            if (studentIdLen < 0 || studentIdLen > 1024)
-                return null;
-            byte[] studentIdBytes = new byte[studentIdLen];
-            in.readFully(studentIdBytes);
-            msg.studentId = new String(studentIdBytes, java.nio.charset.StandardCharsets.UTF_8);
-
+            msg.type = readString(in);
+            msg.sender = readString(in);
+            msg.messageType = readString(in);
+            msg.studentId = readString(in);
             msg.timestamp = in.readLong();
 
             int payloadLen = in.readInt();
-            if (payloadLen < 0 || payloadLen > (1 << 24))
+            if (payloadLen < 0 || payloadLen > (1 << 30))
                 return null;
             byte[] payloadBytes = new byte[payloadLen];
-            in.readFully(payloadBytes);
+            if (payloadLen > 0)
+                in.readFully(payloadBytes);
             msg.payload = payloadBytes;
 
             // Basic validation: magic must match expected tag when present

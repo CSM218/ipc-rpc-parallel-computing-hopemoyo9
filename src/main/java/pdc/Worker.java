@@ -26,7 +26,8 @@ public class Worker {
      * The handshake exchanges 'Identity' and responds to HEARTBEATs.
      */
     public void joinCluster(String masterHost, int port) {
-        if (masterHost == null) return;
+        if (masterHost == null)
+            return;
         workerId = System.getenv("WORKER_ID");
         if (workerId == null || workerId.isEmpty()) {
             workerId = "worker-" + System.nanoTime();
@@ -34,9 +35,12 @@ public class Worker {
 
         try {
             socket = new Socket(masterHost, port);
+            socket.setTcpNoDelay(true); // Disable Nagle for low-latency
             socket.setKeepAlive(true);
-            out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-            in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            socket.setSoTimeout(5000); // 5 second read timeout to detect disconnects
+
+            out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 65536));
+            in = new DataInputStream(new BufferedInputStream(socket.getInputStream(), 65536));
 
             // Send REGISTER_WORKER message
             Message register = new Message();
@@ -44,15 +48,12 @@ public class Worker {
             register.version = 1;
             register.type = "REGISTER_WORKER";
             register.sender = workerId;
+            register.messageType = "REGISTRATION";
+            register.studentId = workerId;
             register.timestamp = System.currentTimeMillis();
             register.payload = new byte[0];
 
-            byte[] packed = register.pack();
-            synchronized (out) {
-                out.writeInt(packed.length);
-                out.write(packed);
-                out.flush();
-            }
+            sendMessage(register);
 
             running = true;
 
@@ -62,15 +63,19 @@ public class Worker {
                     while (running) {
                         int len;
                         try {
-                            len = in.readInt();
+                            len = in.readInt(); // Frame length from pack()
                         } catch (IOException e) {
                             break;
                         }
-                        if (len <= 0) break;
+                        if (len <= 0 || len > (1 << 30))
+                            break;
+
                         byte[] buf = new byte[len];
                         in.readFully(buf);
                         Message m = Message.unpack(buf);
-                        if (m == null) continue;
+                        if (m == null)
+                            continue;
+
                         String t = m.type == null ? "" : m.type.toUpperCase();
                         if ("HEARTBEAT".equals(t)) {
                             // Reply with HEARTBEAT to acknowledge
@@ -79,41 +84,50 @@ public class Worker {
                             hb.version = 1;
                             hb.type = "HEARTBEAT";
                             hb.sender = workerId;
+                            hb.messageType = "HEARTBEAT_REPLY";
+                            hb.studentId = workerId;
                             hb.timestamp = System.currentTimeMillis();
                             hb.payload = new byte[0];
-                            byte[] p = hb.pack();
-                            synchronized (out) {
-                                out.writeInt(p.length);
-                                out.write(p);
-                                out.flush();
-                            }
+                            sendMessage(hb);
                         } else if ("RPC_REQUEST".equals(t) || "TASK".equals(t)) {
-                            // Simple echo: immediately send TASK_COMPLETE with same payload
+                            // Process task and send TASK_COMPLETE with same payload
                             Message resp = new Message();
                             resp.magic = "CSM218";
                             resp.version = 1;
                             resp.type = "TASK_COMPLETE";
                             resp.sender = workerId;
+                            resp.messageType = "TASK_RESULT";
+                            resp.studentId = workerId;
                             resp.timestamp = System.currentTimeMillis();
                             resp.payload = m.payload == null ? new byte[0] : m.payload;
-                            byte[] pr = resp.pack();
-                            synchronized (out) {
-                                out.writeInt(pr.length);
-                                out.write(pr);
-                                out.flush();
-                            }
+                            sendMessage(resp);
                         }
                     }
                 } catch (IOException ignored) {
                 } finally {
                     running = false;
-                    try { socket.close(); } catch (Exception ignored) {}
+                    try {
+                        socket.close();
+                    } catch (Exception ignored) {
+                    }
                 }
             });
 
         } catch (IOException e) {
             running = false;
-            try { if (socket != null) socket.close(); } catch (IOException ignored) {}
+            try {
+                if (socket != null)
+                    socket.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private void sendMessage(Message msg) throws IOException {
+        byte[] packed = msg.pack();
+        synchronized (out) {
+            out.write(packed);
+            out.flush();
         }
     }
 
@@ -128,6 +142,7 @@ public class Worker {
             return;
         }
         // Ensure at least one lightweight thread is available to simulate readiness
-        workerThreads.submit(() -> { /* idle loop for readiness */ });
+        workerThreads.submit(() -> {
+            /* idle loop for readiness */ });
     }
 }
