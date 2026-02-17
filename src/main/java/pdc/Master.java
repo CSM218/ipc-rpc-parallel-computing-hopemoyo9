@@ -313,33 +313,14 @@ public class Master {
                     break;
                 }
 
-                // JUMBO_PAYLOAD_FRAGMENT_SAFE: Read all bytes even if TCP-fragmented
-                // Critical for large message support (>64KB, >1MB, etc)
+                // JUMBO_PAYLOAD_FRAGMENT_SAFE: Use readFully to handle TCP fragmentation
+                // ReadFully blocks until all bytes received or EOF - handles fragmentation
+                // automatically
                 byte[] payload = new byte[length];
-                int bytesRead = 0;
-                while (bytesRead < length) {
-                    try {
-                        int count = input.read(payload, bytesRead, length - bytesRead);
-                        if (count < 0) {
-                            break; // EOF before all bytes received
-                        }
-                        if (count == 0) {
-                            // No data available, wait and retry
-                            Thread.sleep(1);
-                            continue;
-                        }
-                        bytesRead += count;
-                    } catch (IOException e) {
-                        break;
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-
-                if (bytesRead < length) {
-                    // Incomplete message received
-                    break;
+                try {
+                    input.readFully(payload); // Blocks until length bytes received or throws EOFException
+                } catch (IOException e) {
+                    break; // Connection lost during read
                 }
 
                 Message message = Message.unpack(payload);

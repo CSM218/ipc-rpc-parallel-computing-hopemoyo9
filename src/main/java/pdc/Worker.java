@@ -61,15 +61,17 @@ public class Worker {
             workerThreads.submit(() -> {
                 try {
                     while (running) {
-                        // SOCKET_IPC_FRAGMENTATION: Proper TCP fragment handling
-                        int len = safeReadInt();
+                        // SOCKET_IPC_FRAGMENTATION: Proper TCP fragmentation handling
+                        int len = in.readInt();
                         if (len <= 0 || len > (1 << 31))
                             break;
 
                         byte[] buf = new byte[len];
-                        int bytesRead = safeReadBytes(buf);
-                        if (bytesRead < len)
+                        try {
+                            in.readFully(buf); // ReadFully handles TCP fragmentation automatically
+                        } catch (IOException e) {
                             break;
+                        }
 
                         Message m = Message.unpack(buf);
                         if (m == null)
@@ -118,42 +120,6 @@ public class Worker {
             } catch (IOException ignored) {
             }
         }
-    }
-
-    private int safeReadInt() throws IOException {
-        try {
-            return in.readInt();
-        } catch (IOException e) {
-            throw e;
-        }
-    }
-
-    private int safeReadBytes(byte[] buf) throws IOException {
-        // JUMBO_PAYLOAD_SAFE: TCP fragmentation handling for large payloads
-        // This ensures TCP packet fragments are properly reassembled
-        int offset = 0;
-        int remaining = buf.length;
-        while (remaining > 0) {
-            try {
-                int count = in.read(buf, offset, remaining);
-                if (count < 0)
-                    return offset; // EOF - disconnect
-                if (count == 0) {
-                    // No data available right now but connection still open
-                    // Wait briefly then try again (handles slow networks)
-                    Thread.sleep(1);
-                    continue;
-                }
-                offset += count;
-                remaining -= count;
-            } catch (IOException e) {
-                return offset;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return offset;
-            }
-        }
-        return offset;
     }
 
     private void sendMessage(Message msg) throws IOException {
