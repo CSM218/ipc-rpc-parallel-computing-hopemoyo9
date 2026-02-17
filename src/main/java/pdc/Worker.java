@@ -35,12 +35,12 @@ public class Worker {
 
         try {
             socket = new Socket(masterHost, port);
-            socket.setTcpNoDelay(true); // Disable Nagle for low-latency
+            socket.setTcpNoDelay(true);
             socket.setKeepAlive(true);
-            socket.setSoTimeout(5000); // 5 second read timeout to detect disconnects
+            // Remove timeout to allow long-lived connections without data
 
-            out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 65536));
-            in = new DataInputStream(new BufferedInputStream(socket.getInputStream(), 65536));
+            out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 131072));
+            in = new DataInputStream(new BufferedInputStream(socket.getInputStream(), 131072));
 
             // Send REGISTER_WORKER message
             Message register = new Message();
@@ -63,22 +63,26 @@ public class Worker {
                     while (running) {
                         int len;
                         try {
-                            len = in.readInt(); // Frame length from pack()
+                            len = in.readInt();
                         } catch (IOException e) {
                             break;
                         }
-                        if (len <= 0 || len > (1 << 30))
+                        if (len <= 0 || len > (1 << 31))
                             break;
 
                         byte[] buf = new byte[len];
-                        in.readFully(buf);
+                        try {
+                            in.readFully(buf);
+                        } catch (IOException e) {
+                            break;
+                        }
+
                         Message m = Message.unpack(buf);
                         if (m == null)
                             continue;
 
                         String t = m.type == null ? "" : m.type.toUpperCase();
                         if ("HEARTBEAT".equals(t)) {
-                            // Reply with HEARTBEAT to acknowledge
                             Message hb = new Message();
                             hb.magic = "CSM218";
                             hb.version = 1;
@@ -90,7 +94,6 @@ public class Worker {
                             hb.payload = new byte[0];
                             sendMessage(hb);
                         } else if ("RPC_REQUEST".equals(t) || "TASK".equals(t)) {
-                            // Process task and send TASK_COMPLETE with same payload
                             Message resp = new Message();
                             resp.magic = "CSM218";
                             resp.version = 1;
@@ -126,7 +129,7 @@ public class Worker {
     private void sendMessage(Message msg) throws IOException {
         byte[] packed = msg.pack();
         synchronized (out) {
-            out.writeInt(packed.length);  // Write frame length
+            out.writeInt(packed.length); // Write frame length
             out.write(packed);
             out.flush();
         }

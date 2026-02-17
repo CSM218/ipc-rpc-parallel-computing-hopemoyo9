@@ -69,7 +69,7 @@ public class Master {
     // Enhanced fault tolerance tracking
     private final ConcurrentMap<Integer, Integer> taskReassignmentCount = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Integer> workerFailureCount = new ConcurrentHashMap<>();
-    private static final int DEEP_REASSIGNMENT_LIMIT = 10;
+    private static final int DEEP_REASSIGNMENT_LIMIT = 15;
 
     /**
      * Entry point for a distributed computation.
@@ -166,14 +166,20 @@ public class Master {
 
                     try {
                         computeBlockMultiply(data, result, task.rowStart, task.rowEnd, lease);
-                        inFlight.remove(task.id);
-                        remainingTasks.decrementAndGet();
-                    } catch (RuntimeException ex) {
-                        inFlight.remove(task.id);
-                        if (task.attempts.incrementAndGet() <= MAX_ATTEMPTS) {
-                            taskQueue.offer(task);
-                        } else {
+                        if (inFlight.remove(task.id, lease)) {
                             remainingTasks.decrementAndGet();
+                        }
+                    } catch (RuntimeException ex) {
+                        TaskLease removed = inFlight.remove(task.id);
+                        if (removed != null) {
+                            // Task failed - track reassignment and requeue
+                            int reassignCount = taskReassignmentCount.getOrDefault(task.id, 0);
+                            if (reassignCount < DEEP_REASSIGNMENT_LIMIT) {
+                                taskReassignmentCount.put(task.id, reassignCount + 1);
+                                taskQueue.offer(task);
+                            } else {
+                                remainingTasks.decrementAndGet();
+                            }
                         }
                     }
                 }
