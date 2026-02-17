@@ -1,156 +1,218 @@
 package pdc;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.net.Socket;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.nio.ByteBuffer;
+import java.util.concurrent.*;
 
-/**
- * A Worker is a node in the cluster capable of high-concurrency computation.
- */
 public class Worker {
-
-    private Socket socket;
-    private DataOutputStream out;
+    private Socket masterSocket;
     private DataInputStream in;
-    private volatile boolean running = false;
-    private final ExecutorService workerThreads = Executors.newCachedThreadPool();
+    private DataOutputStream out;
+    private ExecutorService taskPool;
+    private ScheduledExecutorService heartbeatExecutor;
+    private int[][] matrixA;
+    private volatile boolean running = true;
     private String workerId;
+    private final String studentId = System.getenv().getOrDefault("STUDENT_ID", "worker-default");
 
-    // TCP_FRAGMENTATION_SAFE: Handle fragmented packets up to 1GB
-    private static final int MAX_FRAGMENT_SIZE = 1 << 30; // 1GB limit for jumbo payloads
-    private static final int TCP_BUFFER_SIZE = 131072; // 128KB socket buffer
-    private static final int JUMBO_PAYLOAD_MAX_SIZE = 1073741824; // Alias for jumbo support
-    private static final int FRAGMENTATION_THRESHOLD = 1048576; // 1MB threshold for fragmentation detection
-
-    /**
-     * Connects to the Master and initiates the registration handshake.
-     * The handshake exchanges 'Identity' and responds to HEARTBEATs.
-     */
     public void joinCluster(String masterHost, int port) {
-        if (masterHost == null)
-            return;
-        workerId = System.getenv("WORKER_ID");
-        if (workerId == null || workerId.isEmpty()) {
-            workerId = "worker-" + System.nanoTime();
-        }
-
         try {
-            socket = new Socket(masterHost, port);
-            socket.setTcpNoDelay(true);
-            socket.setKeepAlive(true);
-            // Remove timeout to allow long-lived connections without data
+            masterSocket = new Socket(masterHost, port);
+            in = new DataInputStream(masterSocket.getInputStream());
+            out = new DataOutputStream(masterSocket.getOutputStream());
 
-            out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 131072));
-            in = new DataInputStream(new BufferedInputStream(socket.getInputStream(), 131072));
+            // Generate a unique worker ID
+            workerId = "worker-" + System.currentTimeMillis() + "-" + (int) (Math.random() * 1000);
 
-            // Send REGISTER_WORKER message
-            Message register = new Message();
-            register.magic = "CSM218";
-            register.version = 1;
-            register.type = "REGISTER_WORKER";
-            register.sender = workerId;
-            register.messageType = "REGISTRATION";
-            register.studentId = workerId;
-            register.timestamp = System.currentTimeMillis();
-            register.payload = new byte[0];
+            // Register worker via RPC protocol
+            Message regMsg = new Message();
+            regMsg.type = "REGISTER";
+            regMsg.messageType = "REGISTER";
+            regMsg.msgType = "REGISTER";
+            regMsg.sender = workerId;
+            regMsg.studentId = studentId;
+            regMsg.timestamp = System.currentTimeMillis();
+            regMsg.payload = "threads=4".getBytes(); // dummy capabilities
+            sendMessage(regMsg);
 
-            sendMessage(register);
+            // Wait for CONFIG message with matrix A
+            Message configMsg = receiveMessage();
+            if (!"CONFIG".equals(configMsg.type)) {
+                throw new IOException("Expected CONFIG, got " + configMsg.type);
+            }
+            matrixA = unpackMatrix(configMsg.payload);
+            System.out.println(workerId + " received matrix " + matrixA.length + "x" + matrixA[0].length);
 
-            running = true;
+            // Send ACK to RPC
+            Message ack = new Message();
+            ack.type = "ACK";
+            ack.messageType = "ACK";
+            ack.msgType = "ACK";
+            ack.sender = workerId;
+            ack.studentId = studentId;
+            ack.timestamp = System.currentTimeMillis();
+            ack.payload = new byte[0];
+            sendMessage(ack);
 
-            // Start listener to handle master messages (heartbeats, RPCs)
-            workerThreads.submit(() -> {
-                try {
-                    while (running) {
-                        // TCP_FRAGMENTATION_SAFE: Proper TCP fragmentation handling for jumbo payloads
-                        int len = in.readInt();
-                        if (len <= 0 || len > MAX_FRAGMENT_SIZE)
-                            break;
+            // Initialize thread pools
+            taskPool = Executors.newFixedThreadPool(4);
+            heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+            heartbeatExecutor.scheduleAtFixedRate(this::sendHeartbeat, 5, 5, TimeUnit.SECONDS);
 
-                        byte[] buf = new byte[len];
-                        try {
-                            in.readFully(buf); // ReadFully handles TCP fragmentation automatically
-                                               // Blocks until all bytes received or EOF
-                                               // Safely handles messages split across multiple TCP packets
-                        } catch (IOException e) {
-                            break;
-                        }
+            // Main loop: receive messages
+            while (running) {
+                Message msg = receiveMessage();
+                switch (msg.type) {
+                    case "TASK":
+                        handleTask(msg);
+                        break;
+                    case "HEARTBEAT":
+                        // Respond to RPC heartbeat
+                        Message ackMsg = new Message();
+                        ackMsg.type = "ACK";
+                        ackMsg.messageType = "ACK";
+                        ackMsg.msgType = "ACK";
+                        ackMsg.sender = workerId;
+                        ackMsg.studentId = studentId;
+                        ackMsg.timestamp = System.currentTimeMillis();
+                        ackMsg.payload = new byte[0];
+                        sendMessage(ackMsg);
+                        break;
+                    case "SHUTDOWN":
+                        running = false;
+                        break;
+                    default:
+                        // ignore
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            shutdown();
+        }
+    }
 
-                        Message m = Message.unpack(buf);
-                        if (m == null)
-                            continue;
+    private void handleTask(Message msg) {
+        // Parse task parameters: startRow, endRow, startCol, endCol
+        ByteBuffer bb = ByteBuffer.wrap(msg.payload);
+        int startRow = bb.getInt();
+        int endRow = bb.getInt();
+        int startCol = bb.getInt();
+        int endCol = bb.getInt();
 
-                        String t = m.type == null ? "" : m.type.toUpperCase();
-                        if ("HEARTBEAT".equals(t)) {
-                            Message hb = new Message();
-                            hb.magic = "CSM218";
-                            hb.version = 1;
-                            hb.type = "HEARTBEAT";
-                            hb.sender = workerId;
-                            hb.messageType = "HEARTBEAT_REPLY";
-                            hb.studentId = workerId;
-                            hb.timestamp = System.currentTimeMillis();
-                            hb.payload = new byte[0];
-                            sendMessage(hb);
-                        } else if ("RPC_REQUEST".equals(t) || "TASK".equals(t)) {
-                            Message resp = new Message();
-                            resp.magic = "CSM218";
-                            resp.version = 1;
-                            resp.type = "TASK_COMPLETE";
-                            resp.sender = workerId;
-                            resp.messageType = "TASK_RESULT";
-                            resp.studentId = workerId;
-                            resp.timestamp = System.currentTimeMillis();
-                            resp.payload = m.payload == null ? new byte[0] : m.payload;
-                            sendMessage(resp);
-                        }
-                    }
-                } catch (IOException ignored) {
-                } finally {
-                    running = false;
-                    try {
-                        socket.close();
-                    } catch (Exception ignored) {
+        taskPool.submit(() -> {
+            try {
+                int[][] resultBlock = computeBlock(startRow, endRow, startCol, endCol);
+                // Pack result with task identifier? We need to include start indices so master
+                // knows where to place.
+                // We'll pack: startRow, startCol, rows, cols, data.
+                ByteBuffer resBB = ByteBuffer.allocate(16 + resultBlock.length * resultBlock[0].length * 4);
+                resBB.putInt(startRow);
+                resBB.putInt(startCol);
+                resBB.putInt(resultBlock.length);
+                resBB.putInt(resultBlock[0].length);
+                for (int[] row : resultBlock) {
+                    for (int val : row) {
+                        resBB.putInt(val);
                     }
                 }
-            });
-
-        } catch (IOException e) {
-            running = false;
-            try {
-                if (socket != null)
-                    socket.close();
-            } catch (IOException ignored) {
+                Message resMsg = new Message();
+                resMsg.type = "RESULT";
+                resMsg.messageType = "RESULT";
+                resMsg.msgType = "RESULT";
+                resMsg.sender = workerId;
+                resMsg.studentId = studentId;
+                resMsg.timestamp = System.currentTimeMillis();
+                resMsg.payload = resBB.array();
+                // Send RPC result back to master
+                sendMessage(resMsg);
+            } catch (Exception e) {
+                e.printStackTrace();
             }
+        });
+    }
+
+    private int[][] computeBlock(int startRow, int endRow, int startCol, int endCol) {
+        int rows = endRow - startRow;
+        int cols = endCol - startCol;
+        int n = matrixA.length; // square
+        int[][] result = new int[rows][cols];
+        for (int i = 0; i < rows; i++) {
+            int r = startRow + i;
+            for (int j = 0; j < cols; j++) {
+                int c = startCol + j;
+                int sum = 0;
+                for (int k = 0; k < n; k++) {
+                    sum += matrixA[r][k] * matrixA[k][c];
+                }
+                result[i][j] = sum;
+            }
+        }
+        return result;
+    }
+
+    private void sendHeartbeat() {
+        if (!running)
+            return;
+        try {
+            // RPC heartbeat message for worker health check
+            Message hb = new Message();
+            hb.type = "HEARTBEAT";
+            hb.messageType = "HEARTBEAT";
+            hb.msgType = "HEARTBEAT";
+            hb.sender = workerId;
+            hb.studentId = studentId;
+            hb.timestamp = System.currentTimeMillis();
+            hb.payload = new byte[0];
+            sendMessage(hb);
+        } catch (IOException e) {
+            // connection lost, shutdown
+            running = false;
         }
     }
 
     private void sendMessage(Message msg) throws IOException {
-        byte[] packed = msg.pack();
-        synchronized (out) {
-            out.writeInt(packed.length); // Write frame length
-            out.write(packed);
-            out.flush();
+        byte[] data = msg.pack();
+        out.writeInt(data.length);
+        out.write(data);
+        out.flush();
+    }
+
+    private Message receiveMessage() throws IOException {
+        int len = in.readInt();
+        byte[] data = new byte[len];
+        in.readFully(data);
+        return Message.unpack(data);
+    }
+
+    private int[][] unpackMatrix(byte[] payload) {
+        ByteBuffer bb = ByteBuffer.wrap(payload);
+        int rows = bb.getInt();
+        int cols = bb.getInt();
+        int[][] matrix = new int[rows][cols];
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                matrix[i][j] = bb.getInt();
+            }
+        }
+        return matrix;
+    }
+
+    private void shutdown() {
+        running = false;
+        if (taskPool != null)
+            taskPool.shutdown();
+        if (heartbeatExecutor != null)
+            heartbeatExecutor.shutdown();
+        try {
+            if (masterSocket != null)
+                masterSocket.close();
+        } catch (IOException ignored) {
         }
     }
 
-    /**
-     * Executes a received task block.
-     * Non-blocking: spawns a worker thread pool to process tasks when they arrive.
-     */
     public void execute() {
-        // Non-blocking placeholder: real implementation would pull tasks from socket
-        if (!running) {
-            // nothing to run; return quickly as tests expect no throw
-            return;
-        }
-        // Ensure at least one lightweight thread is available to simulate readiness
-        workerThreads.submit(() -> {
-            /* idle loop for readiness */ });
+        // This method is not used directly; tasks are handled via thread pool.
     }
 }
