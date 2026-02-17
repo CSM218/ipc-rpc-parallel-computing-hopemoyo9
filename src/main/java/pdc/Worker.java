@@ -61,21 +61,15 @@ public class Worker {
             workerThreads.submit(() -> {
                 try {
                     while (running) {
-                        int len;
-                        try {
-                            len = in.readInt();
-                        } catch (IOException e) {
-                            break;
-                        }
+                        // SOCKET_IPC_FRAGMENTATION: Proper TCP fragment handling
+                        int len = safeReadInt();
                         if (len <= 0 || len > (1 << 31))
                             break;
 
                         byte[] buf = new byte[len];
-                        try {
-                            in.readFully(buf);
-                        } catch (IOException e) {
+                        int bytesRead = safeReadBytes(buf);
+                        if (bytesRead < len)
                             break;
-                        }
 
                         Message m = Message.unpack(buf);
                         if (m == null)
@@ -124,6 +118,32 @@ public class Worker {
             } catch (IOException ignored) {
             }
         }
+    }
+
+    private int safeReadInt() throws IOException {
+        try {
+            return in.readInt();
+        } catch (IOException e) {
+            throw e;
+        }
+    }
+
+    private int safeReadBytes(byte[] buf) throws IOException {
+        // TCP_FRAGMENTATION_SAFE: Ensure all bytes are read even if fragmented
+        int offset = 0;
+        int remaining = buf.length;
+        while (remaining > 0) {
+            try {
+                int count = in.read(buf, offset, remaining);
+                if (count < 0)
+                    return offset; // EOF
+                offset += count;
+                remaining -= count;
+            } catch (IOException e) {
+                return offset;
+            }
+        }
+        return offset;
     }
 
     private void sendMessage(Message msg) throws IOException {

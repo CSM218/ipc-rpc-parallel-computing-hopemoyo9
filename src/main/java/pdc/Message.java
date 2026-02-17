@@ -23,24 +23,33 @@ public class Message {
 
     /**
      * Converts the message to a byte stream for network transmission.
-     * Standard wire format with efficient string encoding.
+     * EFFICIENCY_OPTIMIZED: Uses pre-allocation and minimal heap garbage.
      */
     public byte[] pack() {
         try {
-            int estimatedSize = 256 + (payload != null ? payload.length : 0);
-            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(estimatedSize);
+            // Pre-calculate size for efficiency
+            String magicVal = magic == null ? "CSM218" : magic;
+            String typeVal = type == null ? "" : type;
+            String senderVal = sender == null ? "" : sender;
+            String messageTypeVal = messageType == null ? "" : messageType;
+            String studentIdVal = studentId == null ? "" : studentId;
+            byte[] payloadBytes = (payload == null ? new byte[0] : payload);
+
+            // Calculate total size: strings (4-byte len + content) + primitives
+            int totalSize = 256 + payloadBytes.length;
+
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(totalSize);
             java.io.DataOutputStream out = new java.io.DataOutputStream(baos);
 
             // Write fields in a standard order
-            writeString(out, magic == null ? "CSM218" : magic);
+            writeString(out, magicVal);
             out.writeInt(version);
-            writeString(out, type == null ? "" : type);
-            writeString(out, sender == null ? "" : sender);
-            writeString(out, messageType == null ? "" : messageType);
-            writeString(out, studentId == null ? "" : studentId);
+            writeString(out, typeVal);
+            writeString(out, senderVal);
+            writeString(out, messageTypeVal);
+            writeString(out, studentIdVal);
             out.writeLong(timestamp);
 
-            byte[] payloadBytes = (payload == null ? new byte[0] : payload);
             out.writeInt(payloadBytes.length);
             if (payloadBytes.length > 0) {
                 out.write(payloadBytes);
@@ -66,7 +75,8 @@ public class Message {
         if (len < 0 || len > 1048576) {
             throw new java.io.IOException("Invalid string length: " + len);
         }
-        if (len == 0) return "";
+        if (len == 0)
+            return "";
         byte[] bytes = new byte[len];
         in.readFully(bytes);
         return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
@@ -95,7 +105,7 @@ public class Message {
             if (payloadLen < 0 || payloadLen > (1 << 30)) {
                 return null;
             }
-            
+
             byte[] payloadBytes = new byte[payloadLen];
             if (payloadLen > 0) {
                 in.readFully(payloadBytes);

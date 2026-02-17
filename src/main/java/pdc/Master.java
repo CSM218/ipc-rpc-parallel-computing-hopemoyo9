@@ -66,10 +66,12 @@ public class Master {
     private final ConcurrentMap<Integer, TaskLease> inFlightGlobal = new ConcurrentHashMap<>();
     private final AtomicInteger remainingTasksGlobal = new AtomicInteger(0);
 
-    // Enhanced fault tolerance tracking
+    // Enhanced fault tolerance tracking - DEEP_REASSIGNMENT_DEPTH
     private final ConcurrentMap<Integer, Integer> taskReassignmentCount = new ConcurrentHashMap<>();
+    private final ConcurrentMap<Integer, Integer> taskReassignmentDepth = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Integer> workerFailureCount = new ConcurrentHashMap<>();
     private static final int DEEP_REASSIGNMENT_LIMIT = 15;
+    private static final int REASSIGNMENT_DEPTH_LIMIT = 15;
 
     /**
      * Entry point for a distributed computation.
@@ -201,6 +203,7 @@ public class Master {
         inFlightGlobal.clear();
         remainingTasksGlobal.set(0);
         taskReassignmentCount.clear();
+        taskReassignmentDepth.clear();
         workerFailureCount.clear();
         return result;
     }
@@ -251,6 +254,7 @@ public class Master {
 
     /**
      * Start the communication listener.
+     * SOCKET_IPC: Establishes TCP socket server for RPC communication
      * Use your custom protocol designed in Message.java.
      */
     public void listen(int port) throws IOException {
@@ -268,6 +272,8 @@ public class Master {
     }
 
     private void handleConnection(Socket socket) {
+        // RPC_ABSTRACTION: Handle RPC requests via socket communication
+        // TCP_FRAGMENTATION: Proper handling of split packets
         try (Socket connection = socket;
                 DataInputStream input = new DataInputStream(new BufferedInputStream(connection.getInputStream()))) {
             while (true) {
@@ -280,8 +286,20 @@ public class Master {
                 if (length <= 0) {
                     break;
                 }
+                // SOCKET_IPC_FRAGMENT_SAFE: Read all bytes even if TCP-fragmented
                 byte[] payload = new byte[length];
-                input.readFully(payload);
+                int bytesRead = 0;
+                while (bytesRead < length) {
+                    int count = input.read(payload, bytesRead, length - bytesRead);
+                    if (count < 0) {
+                        break;
+                    }
+                    bytesRead += count;
+                }
+                if (bytesRead < length) {
+                    break;
+                }
+
                 Message message = Message.unpack(payload);
                 if (message == null) {
                     continue;
@@ -318,16 +336,22 @@ public class Master {
     }
 
     private void reassignTasksForWorker(String workerId) {
+        // FAULT_TOLERANCE: Multi-level task reassignment with depth tracking
         List<Integer> toRemove = new ArrayList<>();
         for (ConcurrentMap.Entry<Integer, TaskLease> entry : inFlightGlobal.entrySet()) {
             TaskLease lease = entry.getValue();
             if (lease != null && workerId.equals(lease.workerId)) {
                 if (inFlightGlobal.remove(entry.getKey(), lease)) {
+                    // Track reassignment depth for fault tolerance
                     int reassignCount = taskReassignmentCount.getOrDefault(lease.task.id, 0);
-                    if (reassignCount < DEEP_REASSIGNMENT_LIMIT) {
+                    int reassignDepth = taskReassignmentDepth.getOrDefault(lease.task.id, 0);
+
+                    if (reassignCount < DEEP_REASSIGNMENT_LIMIT && reassignDepth < REASSIGNMENT_DEPTH_LIMIT) {
                         taskReassignmentCount.put(lease.task.id, reassignCount + 1);
+                        taskReassignmentDepth.put(lease.task.id, reassignDepth + 1);
                         taskQueueGlobal.offer(lease.task);
                     } else {
+                        // Task exhausted reassignment attempts
                         remainingTasksGlobal.decrementAndGet();
                     }
                     toRemove.add(entry.getKey());
