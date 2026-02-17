@@ -275,7 +275,8 @@ public class Master {
                 } else if ("TASK_COMPLETE".equals(msgType) || "RPC_RESPONSE".equals(msgType)) {
                     // For now, simply update last-seen time for the sender
                     updateHeartbeat(sender);
-                    // In a full implementation we would route the payload to task completion handlers
+                    // In a full implementation we would route the payload to task completion
+                    // handlers
                 }
             }
         } catch (IOException ex) {
