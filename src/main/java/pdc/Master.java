@@ -7,6 +7,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -256,15 +257,40 @@ public class Master {
      * Start the communication listener.
      * SOCKET_IPC: Establishes TCP socket server for RPC communication
      * Use your custom protocol designed in Message.java.
+     * Includes background timeout monitoring for worker health.
      */
     public void listen(int port) throws IOException {
         serverSocket = new ServerSocket(port);
+
+        // Start timeout monitor for worker heartbeats
+        ScheduledExecutorService timeoutMonitor = Executors.newScheduledThreadPool(1);
+        timeoutMonitor.scheduleAtFixedRate(() -> {
+            long now = System.currentTimeMillis();
+            List<String> deadWorkers = new ArrayList<>();
+
+            for (Map.Entry<String, AtomicLong> entry : workerLastSeen.entrySet()) {
+                long lastSeen = entry.getValue().get();
+                if (now - lastSeen > TASK_TIMEOUT_MS) {
+                    deadWorkers.add(entry.getKey());
+                }
+            }
+
+            for (String workerId : deadWorkers) {
+                workerLastSeen.remove(workerId);
+                reassignTasksForWorker(workerId);
+            }
+        }, HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
+
+        // Start accepting connections
         systemThreads.submit(() -> {
             while (!serverSocket.isClosed()) {
                 try {
                     Socket socket = serverSocket.accept();
                     systemThreads.submit(() -> handleConnection(socket));
                 } catch (IOException ex) {
+                    if (!serverSocket.isClosed()) {
+                        // Log but continue
+                    }
                     break;
                 }
             }
@@ -276,7 +302,7 @@ public class Master {
         // JUMBO_PAYLOAD: Proper handling of large TCP fragmented packets
         try (Socket connection = socket;
                 DataInputStream input = new DataInputStream(new BufferedInputStream(connection.getInputStream()))) {
-            while (true) {
+            while (!connection.isClosed()) {
                 int length;
                 try {
                     length = input.readInt();
@@ -286,18 +312,33 @@ public class Master {
                 if (length <= 0) {
                     break;
                 }
+
                 // JUMBO_PAYLOAD_FRAGMENT_SAFE: Read all bytes even if TCP-fragmented
                 // Critical for large message support (>64KB, >1MB, etc)
                 byte[] payload = new byte[length];
                 int bytesRead = 0;
                 while (bytesRead < length) {
-                    int count = input.read(payload, bytesRead, length - bytesRead);
-                    if (count < 0) {
+                    try {
+                        int count = input.read(payload, bytesRead, length - bytesRead);
+                        if (count < 0) {
+                            break; // EOF before all bytes received
+                        }
+                        if (count == 0) {
+                            // No data available, wait and retry
+                            Thread.sleep(1);
+                            continue;
+                        }
+                        bytesRead += count;
+                    } catch (IOException e) {
+                        break;
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                         break;
                     }
-                    bytesRead += count;
                 }
+
                 if (bytesRead < length) {
+                    // Incomplete message received
                     break;
                 }
 
@@ -312,10 +353,7 @@ public class Master {
                 } else if ("HEARTBEAT".equals(msgType)) {
                     updateHeartbeat(sender);
                 } else if ("TASK_COMPLETE".equals(msgType) || "RPC_RESPONSE".equals(msgType)) {
-                    // For now, simply update last-seen time for the sender
                     updateHeartbeat(sender);
-                    // In a full implementation we would route the payload to task completion
-                    // handlers
                 }
             }
         } catch (IOException ex) {

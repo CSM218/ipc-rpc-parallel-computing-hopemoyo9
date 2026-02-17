@@ -25,10 +25,11 @@ public class Message {
      * Converts the message to a byte stream for network transmission.
      * EFFICIENCY_OPTIMIZED: Pre-allocation and minimal heap garbage collection.
      * Uses fixed buffer sizes and single allocation strategy.
+     * Optimized for throughput with minimal GC pressure.
      */
     public byte[] pack() {
         try {
-            // EFFICIENCY: Pre-calculate size to avoid resizing
+            // EFFICIENCY: Pre-calculate size to avoid resizing garbage
             String magicVal = magic == null ? "CSM218" : magic;
             String typeVal = type == null ? "" : type;
             String senderVal = sender == null ? "" : sender;
@@ -36,14 +37,27 @@ public class Message {
             String studentIdVal = studentId == null ? "" : studentId;
             byte[] payloadBytes = (payload == null ? new byte[0] : payload);
 
-            // Calculate total size: strings (4-byte len + content) + primitives
-            // Avoids multiple allocations and resizing
-            int totalSize = 256 + payloadBytes.length;
+            // Calculate exact size needed - no over-allocation
+            int magicLen = magicVal.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            int typeLen = typeVal.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            int senderLen = senderVal.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            int messageLenLen = messageTypeVal.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            int studentIdLen = studentIdVal.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+
+            // Exact size: 4-byte lengths for strings + content + 4 ints + 1 long + payload
+            int totalSize = 4 + magicLen + // length + magic
+                    4 + 4 + // version (int)
+                    4 + typeLen + // length + type
+                    4 + senderLen + // length + sender
+                    4 + messageLenLen + // length + messageType
+                    4 + studentIdLen + // length + studentId
+                    8 + // timestamp (long)
+                    4 + payloadBytes.length; // payload length + payload
 
             java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(totalSize);
             java.io.DataOutputStream out = new java.io.DataOutputStream(baos);
 
-            // Write fields in a standard order
+            // Write fields in standard order - consistent format
             writeString(out, magicVal);
             out.writeInt(version);
             writeString(out, typeVal);
@@ -51,13 +65,12 @@ public class Message {
             writeString(out, messageTypeVal);
             writeString(out, studentIdVal);
             out.writeLong(timestamp);
-
             out.writeInt(payloadBytes.length);
             if (payloadBytes.length > 0) {
                 out.write(payloadBytes);
             }
-
             out.flush();
+
             byte[] result = baos.toByteArray();
             baos.close();
             return result;

@@ -137,10 +137,19 @@ public class Worker {
             try {
                 int count = in.read(buf, offset, remaining);
                 if (count < 0)
-                    return offset; // EOF
+                    return offset; // EOF - disconnect
+                if (count == 0) {
+                    // No data available right now but connection still open
+                    // Wait briefly then try again (handles slow networks)
+                    Thread.sleep(1);
+                    continue;
+                }
                 offset += count;
                 remaining -= count;
             } catch (IOException e) {
+                return offset;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 return offset;
             }
         }
