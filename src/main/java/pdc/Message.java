@@ -23,36 +23,25 @@ public class Message {
 
     /**
      * Converts the message to a byte stream for network transmission.
-     * Ultra-compact efficient encoding for large payloads.
+     * Standard wire format with efficient string encoding.
      */
     public byte[] pack() {
         try {
-            // Estimate and preallocate for efficiency
-            int estimatedSize = 128 + (payload != null ? payload.length : 0);
-            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(Math.max(512, estimatedSize));
+            int estimatedSize = 256 + (payload != null ? payload.length : 0);
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(estimatedSize);
             java.io.DataOutputStream out = new java.io.DataOutputStream(baos);
 
-            // Use single-byte version field for compactness
-            out.writeByte(1); // version = 1
-
-            // Compact string encoding: 1-byte length for small strings, 2 bytes for larger
-            writeCompactString(out, magic == null ? "" : magic);
-            writeCompactString(out, type == null ? "" : type);
-            writeCompactString(out, sender == null ? "" : sender);
-            writeCompactString(out, messageType == null ? "" : messageType);
-            writeCompactString(out, studentId == null ? "" : studentId);
-
+            // Write fields in a standard order
+            writeString(out, magic == null ? "CSM218" : magic);
+            out.writeInt(version);
+            writeString(out, type == null ? "" : type);
+            writeString(out, sender == null ? "" : sender);
+            writeString(out, messageType == null ? "" : messageType);
+            writeString(out, studentId == null ? "" : studentId);
             out.writeLong(timestamp);
 
-            // Payload with efficient length encoding
             byte[] payloadBytes = (payload == null ? new byte[0] : payload);
-            if (payloadBytes.length < 256) {
-                out.writeByte(0xFF); // marker for single-byte length
-                out.writeByte(payloadBytes.length);
-            } else {
-                out.writeByte(0xFE); // marker for int length
-                out.writeInt(payloadBytes.length);
-            }
+            out.writeInt(payloadBytes.length);
             if (payloadBytes.length > 0) {
                 out.write(payloadBytes);
             }
@@ -66,30 +55,18 @@ public class Message {
         }
     }
 
-    private static void writeCompactString(java.io.DataOutputStream out, String str) throws java.io.IOException {
-        if (str == null || str.isEmpty()) {
-            out.writeByte(0);
-            return;
-        }
-        byte[] bytes = str.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        if (bytes.length > 255) {
-            out.writeByte(255);
-            out.writeShort(bytes.length);
-        } else {
-            out.writeByte(bytes.length);
-        }
+    private static void writeString(java.io.DataOutputStream out, String str) throws java.io.IOException {
+        byte[] bytes = (str == null ? "" : str).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
         out.write(bytes);
     }
 
-    private static String readCompactString(java.io.DataInputStream in) throws java.io.IOException {
-        int len = in.readUnsignedByte();
-        if (len == 0)
-            return "";
-        if (len == 255) {
-            len = in.readUnsignedShort();
+    private static String readString(java.io.DataInputStream in) throws java.io.IOException {
+        int len = in.readInt();
+        if (len < 0 || len > 1048576) {
+            throw new java.io.IOException("Invalid string length: " + len);
         }
-        if (len > 65536)
-            throw new java.io.IOException("Invalid string length");
+        if (len == 0) return "";
         byte[] bytes = new byte[len];
         in.readFully(bytes);
         return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
@@ -97,50 +74,38 @@ public class Message {
 
     /**
      * Reconstructs a Message from a byte stream.
-     * Robust handling of large payloads and varying message sizes.
      */
     public static Message unpack(byte[] data) {
-        if (data == null || data.length < 2) {
+        if (data == null || data.length < 20) {
             return null;
         }
         try (java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(data);
                 java.io.DataInputStream in = new java.io.DataInputStream(bais)) {
             Message msg = new Message();
 
-            // Read version (1 byte)
-            int version = in.readUnsignedByte();
-            msg.version = version;
-            msg.magic = "CSM218"; // Always set Magic for local messages
-
-            // Read strings
-            msg.type = readCompactString(in);
-            msg.sender = readCompactString(in);
-            msg.messageType = readCompactString(in);
-            msg.studentId = readCompactString(in);
-
-            // Read timestamp
+            msg.magic = readString(in);
+            msg.version = in.readInt();
+            msg.type = readString(in);
+            msg.sender = readString(in);
+            msg.messageType = readString(in);
+            msg.studentId = readString(in);
             msg.timestamp = in.readLong();
 
-            // Read payload with flexible length encoding
-            int payloadMarker = in.readUnsignedByte();
-            int payloadLen;
-            if (payloadMarker == 0xFF) {
-                payloadLen = in.readUnsignedByte();
-            } else if (payloadMarker == 0xFE) {
-                payloadLen = in.readInt();
-            } else {
-                // Old format compatibility - treat marker as length
-                payloadLen = payloadMarker;
-            }
-
-            if (payloadLen < 0 || payloadLen > (1 << 30))
+            int payloadLen = in.readInt();
+            if (payloadLen < 0 || payloadLen > (1 << 30)) {
                 return null;
-
+            }
+            
             byte[] payloadBytes = new byte[payloadLen];
             if (payloadLen > 0) {
                 in.readFully(payloadBytes);
             }
             msg.payload = payloadBytes;
+
+            // Validation
+            if (msg.magic == null || !msg.magic.equals("CSM218")) {
+                return null;
+            }
 
             return msg;
         } catch (java.io.IOException | RuntimeException e) {
