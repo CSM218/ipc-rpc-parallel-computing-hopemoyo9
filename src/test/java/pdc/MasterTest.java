@@ -22,8 +22,7 @@ class MasterTest {
         // High level test to ensure the engine starts
         int[][] matrix = { { 1, 2 }, { 3, 4 } };
         Object result = master.coordinate("SUM", matrix, 1);
-        // Initial stub should return null
-        assertNull(result, "Initial stub should return null");
+        assertEquals(10L, result, "SUM should return the total of all entries");
     }
 
     @Test
