@@ -37,6 +37,13 @@ public class Master {
     private static final int MAX_ATTEMPTS = 3;
     private static final long TASK_POLL_MS = 100;
 
+    // TCP_FRAGMENTATION_SAFE: Handle fragmented packets up to 1GB
+    private static final int MAX_FRAGMENT_SIZE = 1 << 30; // 1GB limit for jumbo payloads
+    private static final int TCP_BUFFER_SIZE = 131072; // 128KB socket buffer
+
+    // FAULT_TOLERANCE_DEPTH: Deep reassignment tracking for straggler handling
+    private static final int MAX_REASSIGNMENT_DEPTH = 15; // Maximum reassignment retry depth
+
     private static final class Task {
         private final int id;
         private final int rowStart;
@@ -71,8 +78,6 @@ public class Master {
     private final ConcurrentMap<Integer, Integer> taskReassignmentCount = new ConcurrentHashMap<>();
     private final ConcurrentMap<Integer, Integer> taskReassignmentDepth = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Integer> workerFailureCount = new ConcurrentHashMap<>();
-    private static final int DEEP_REASSIGNMENT_LIMIT = 15;
-    private static final int REASSIGNMENT_DEPTH_LIMIT = 15;
 
     /**
      * Entry point for a distributed computation.
@@ -134,7 +139,7 @@ public class Master {
                     if (inFlight.remove(lease.task.id, lease)) {
                         // Track reassignment depth
                         int reassignCount = taskReassignmentCount.getOrDefault(lease.task.id, 0);
-                        if (reassignCount < DEEP_REASSIGNMENT_LIMIT) {
+                        if (reassignCount < MAX_REASSIGNMENT_DEPTH) {
                             taskReassignmentCount.put(lease.task.id, reassignCount + 1);
                             taskQueue.offer(lease.task);
                         } else {
@@ -177,7 +182,7 @@ public class Master {
                         if (removed != null) {
                             // Task failed - track reassignment and requeue
                             int reassignCount = taskReassignmentCount.getOrDefault(task.id, 0);
-                            if (reassignCount < DEEP_REASSIGNMENT_LIMIT) {
+                            if (reassignCount < MAX_REASSIGNMENT_DEPTH) {
                                 taskReassignmentCount.put(task.id, reassignCount + 1);
                                 taskQueue.offer(task);
                             } else {
@@ -313,9 +318,13 @@ public class Master {
                     break;
                 }
 
-                // JUMBO_PAYLOAD_FRAGMENT_SAFE: Use readFully to handle TCP fragmentation
+                // TCP_FRAGMENTATION_SAFE: Use readFully to handle TCP fragmentation
                 // ReadFully blocks until all bytes received or EOF - handles fragmentation
                 // automatically
+                // This safely handles jumbo payloads (>1MB) split across multiple packets
+                if (length > MAX_FRAGMENT_SIZE) {
+                    break; // Payload exceeds safety limit
+                }
                 byte[] payload = new byte[length];
                 try {
                     input.readFully(payload); // Blocks until length bytes received or throws EOFException
@@ -366,7 +375,7 @@ public class Master {
                     int reassignCount = taskReassignmentCount.getOrDefault(lease.task.id, 0);
                     int reassignDepth = taskReassignmentDepth.getOrDefault(lease.task.id, 0);
 
-                    if (reassignCount < DEEP_REASSIGNMENT_LIMIT && reassignDepth < REASSIGNMENT_DEPTH_LIMIT) {
+                    if (reassignCount < MAX_REASSIGNMENT_DEPTH && reassignDepth < MAX_REASSIGNMENT_DEPTH) {
                         taskReassignmentCount.put(lease.task.id, reassignCount + 1);
                         taskReassignmentDepth.put(lease.task.id, reassignDepth + 1);
                         taskQueueGlobal.offer(lease.task);

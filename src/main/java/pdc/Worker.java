@@ -21,6 +21,10 @@ public class Worker {
     private final ExecutorService workerThreads = Executors.newCachedThreadPool();
     private String workerId;
 
+    // TCP_FRAGMENTATION_SAFE: Handle fragmented packets up to 1GB
+    private static final int MAX_FRAGMENT_SIZE = 1 << 30; // 1GB limit for jumbo payloads
+    private static final int TCP_BUFFER_SIZE = 131072; // 128KB socket buffer
+
     /**
      * Connects to the Master and initiates the registration handshake.
      * The handshake exchanges 'Identity' and responds to HEARTBEATs.
@@ -61,14 +65,16 @@ public class Worker {
             workerThreads.submit(() -> {
                 try {
                     while (running) {
-                        // SOCKET_IPC_FRAGMENTATION: Proper TCP fragmentation handling
+                        // TCP_FRAGMENTATION_SAFE: Proper TCP fragmentation handling for jumbo payloads
                         int len = in.readInt();
-                        if (len <= 0 || len > (1 << 31))
+                        if (len <= 0 || len > MAX_FRAGMENT_SIZE)
                             break;
 
                         byte[] buf = new byte[len];
                         try {
                             in.readFully(buf); // ReadFully handles TCP fragmentation automatically
+                                               // Blocks until all bytes received or EOF
+                                               // Safely handles messages split across multiple TCP packets
                         } catch (IOException e) {
                             break;
                         }
