@@ -23,13 +23,24 @@ public class Message {
 
     /**
      * Converts the message to a byte stream for network transmission.
-     * Students must implement their own framing (e.g., length-prefixing).
-     * This version includes length-prefix to handle TCP fragmentation properly.
+     * This returns just the message data - the caller handles TCP framing with length prefix.
+     * Optimized for efficiency with preallocated buffer sizing.
      */
     public byte[] pack() {
-        try (java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-                java.io.DataOutputStream out = new java.io.DataOutputStream(baos)) {
-            // Write message fields efficiently
+        try {
+            // Estimate size and preallocate to avoid resizing
+            int estimatedSize = 100 + 
+                (magic != null ? magic.length() : 0) +
+                (type != null ? type.length() : 0) +
+                (sender != null ? sender.length() : 0) +
+                (messageType != null ? messageType.length() : 0) +
+                (studentId != null ? studentId.length() : 0) +
+                (payload != null ? payload.length : 0);
+            
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(Math.max(256, estimatedSize));
+            java.io.DataOutputStream out = new java.io.DataOutputStream(baos);
+            
+            // Write message fields efficiently with compact encoding
             writeString(out, magic == null ? "" : magic);
             out.writeInt(version);
             writeString(out, type == null ? "" : type);
@@ -40,18 +51,13 @@ public class Message {
 
             byte[] payloadBytes = (payload == null ? new byte[0] : payload);
             out.writeInt(payloadBytes.length);
-            out.write(payloadBytes);
+            if (payloadBytes.length > 0) {
+                out.write(payloadBytes);
+            }
 
             out.flush();
-            byte[] frameData = baos.toByteArray();
-
-            // Wrap with length prefix for TCP fragmentation handling
-            java.io.ByteArrayOutputStream wrapper = new java.io.ByteArrayOutputStream();
-            java.io.DataOutputStream wrapOut = new java.io.DataOutputStream(wrapper);
-            wrapOut.writeInt(frameData.length);
-            wrapOut.write(frameData);
-            wrapOut.flush();
-            return wrapper.toByteArray();
+            out.close();
+            return baos.toByteArray();
         } catch (java.io.IOException e) {
             throw new RuntimeException("Failed to pack Message", e);
         }
@@ -74,20 +80,14 @@ public class Message {
 
     /**
      * Reconstructs a Message from a byte stream.
-     * Handles TCP fragmentation by reading frame length first.
+     * Expects just the message data (without TCP length prefix).
      */
     public static Message unpack(byte[] data) {
-        if (data == null || data.length < 4) {
+        if (data == null || data.length < 8) {
             return null;
         }
         try (java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(data);
                 java.io.DataInputStream in = new java.io.DataInputStream(bais)) {
-
-            // Skip frame length prefix (already extracted by socket reader)
-            if (data.length > 4) {
-                in.readInt(); // Skip the length prefix we added in pack()
-            }
-
             Message msg = new Message();
 
             msg.magic = readString(in);

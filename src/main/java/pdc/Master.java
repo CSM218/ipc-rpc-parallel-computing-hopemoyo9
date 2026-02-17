@@ -69,7 +69,7 @@ public class Master {
     // Enhanced fault tolerance tracking
     private final ConcurrentMap<Integer, Integer> taskReassignmentCount = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Integer> workerFailureCount = new ConcurrentHashMap<>();
-    private static final int DEEP_REASSIGNMENT_LIMIT = 5;
+    private static final int DEEP_REASSIGNMENT_LIMIT = 10;
 
     /**
      * Entry point for a distributed computation.

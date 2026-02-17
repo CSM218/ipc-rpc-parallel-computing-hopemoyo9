@@ -126,6 +126,7 @@ public class Worker {
     private void sendMessage(Message msg) throws IOException {
         byte[] packed = msg.pack();
         synchronized (out) {
+            out.writeInt(packed.length);  // Write frame length
             out.write(packed);
             out.flush();
         }
