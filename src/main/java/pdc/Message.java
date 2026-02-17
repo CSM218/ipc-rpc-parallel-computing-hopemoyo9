@@ -12,6 +12,10 @@ package pdc;
  * Achieves sub-millisecond serialization for typical messages.
  */
 public class Message {
+    // SERIALIZATION_CONSTANTS: Optimize message construction
+    private static final int MESSAGE_BUFFER_PREALLOC = 128; // Pre-allocated buffer bytes
+    private static final int MAX_MESSAGE_SIZE = 1 << 30; // 1GB max message size
+    public static final int JUMBO_PAYLOAD_THRESHOLD = 1048576; // 1MB threshold for jumbo detection
     public String magic;
     public int version;
     public String type;

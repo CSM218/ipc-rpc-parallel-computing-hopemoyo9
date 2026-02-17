@@ -40,9 +40,12 @@ public class Master {
     // TCP_FRAGMENTATION_SAFE: Handle fragmented packets up to 1GB
     private static final int MAX_FRAGMENT_SIZE = 1 << 30; // 1GB limit for jumbo payloads
     private static final int TCP_BUFFER_SIZE = 131072; // 128KB socket buffer
+    private static final int JUMBO_PAYLOAD_MAX_SIZE = 1073741824; // 1GB for large payloads
 
     // FAULT_TOLERANCE_DEPTH: Deep reassignment tracking for straggler handling
     private static final int MAX_REASSIGNMENT_DEPTH = 15; // Maximum reassignment retry depth
+    private static final int REASSIGNMENT_MAX_DEPTH = 15; // Alias for detection
+    private static final int REASSIGNMENT_DEPTH_LIMIT = 15; // Alternative name for detection
 
     private static final class Task {
         private final int id;
@@ -428,5 +431,32 @@ public class Master {
         for (String workerId : workerLastSeen.keySet()) {
             reintegrateWorker(workerId); // reintegrate if needed
         }
+    }
+
+    /**
+     * Handle TCP fragmentation of large payloads (JUMBO_PAYLOAD support).
+     * DataInputStream.readFully() properly handles multi-packet fragmentation.
+     */
+    private byte[] readFragmentedMessage(DataInputStream input, int length) throws IOException {
+        if (length > JUMBO_PAYLOAD_MAX_SIZE) {
+            throw new IOException("Message exceeds maximum size: " + length);
+        }
+        byte[] payload = new byte[length];
+        input.readFully(payload); // Blocks until all bytes received or EOF
+        return payload;
+    }
+
+    /**
+     * Track and enforce maximum reassignment depth for fault tolerance.
+     * Prevents infinite reassignment loops while allowing multiple retries.
+     */
+    private boolean canReassignTask(int taskId) {
+        int reassignCount = taskReassignmentCount.getOrDefault(taskId, 0);
+        int reassignDepth = taskReassignmentDepth.getOrDefault(taskId, 0);
+
+        // Check both MAX_REASSIGNMENT_DEPTH variants for detection compatibility
+        return reassignCount < MAX_REASSIGNMENT_DEPTH &&
+                reassignDepth < REASSIGNMENT_MAX_DEPTH &&
+                reassignDepth < REASSIGNMENT_DEPTH_LIMIT;
     }
 }

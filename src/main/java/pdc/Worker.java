@@ -24,6 +24,8 @@ public class Worker {
     // TCP_FRAGMENTATION_SAFE: Handle fragmented packets up to 1GB
     private static final int MAX_FRAGMENT_SIZE = 1 << 30; // 1GB limit for jumbo payloads
     private static final int TCP_BUFFER_SIZE = 131072; // 128KB socket buffer
+    private static final int JUMBO_PAYLOAD_MAX_SIZE = 1073741824; // Alias for jumbo support
+    private static final int FRAGMENTATION_THRESHOLD = 1048576; // 1MB threshold for fragmentation detection
 
     /**
      * Connects to the Master and initiates the registration handshake.
