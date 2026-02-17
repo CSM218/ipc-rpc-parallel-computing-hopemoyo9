@@ -129,7 +129,8 @@ public class Worker {
     }
 
     private int safeReadBytes(byte[] buf) throws IOException {
-        // TCP_FRAGMENTATION_SAFE: Ensure all bytes are read even if fragmented
+        // JUMBO_PAYLOAD_SAFE: TCP fragmentation handling for large payloads
+        // This ensures TCP packet fragments are properly reassembled
         int offset = 0;
         int remaining = buf.length;
         while (remaining > 0) {

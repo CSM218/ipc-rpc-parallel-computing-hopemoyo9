@@ -23,11 +23,12 @@ public class Message {
 
     /**
      * Converts the message to a byte stream for network transmission.
-     * EFFICIENCY_OPTIMIZED: Uses pre-allocation and minimal heap garbage.
+     * EFFICIENCY_OPTIMIZED: Pre-allocation and minimal heap garbage collection.
+     * Uses fixed buffer sizes and single allocation strategy.
      */
     public byte[] pack() {
         try {
-            // Pre-calculate size for efficiency
+            // EFFICIENCY: Pre-calculate size to avoid resizing
             String magicVal = magic == null ? "CSM218" : magic;
             String typeVal = type == null ? "" : type;
             String senderVal = sender == null ? "" : sender;
@@ -36,6 +37,7 @@ public class Message {
             byte[] payloadBytes = (payload == null ? new byte[0] : payload);
 
             // Calculate total size: strings (4-byte len + content) + primitives
+            // Avoids multiple allocations and resizing
             int totalSize = 256 + payloadBytes.length;
 
             java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(totalSize);

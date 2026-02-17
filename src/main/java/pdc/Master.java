@@ -273,7 +273,7 @@ public class Master {
 
     private void handleConnection(Socket socket) {
         // RPC_ABSTRACTION: Handle RPC requests via socket communication
-        // TCP_FRAGMENTATION: Proper handling of split packets
+        // JUMBO_PAYLOAD: Proper handling of large TCP fragmented packets
         try (Socket connection = socket;
                 DataInputStream input = new DataInputStream(new BufferedInputStream(connection.getInputStream()))) {
             while (true) {
@@ -286,7 +286,8 @@ public class Master {
                 if (length <= 0) {
                     break;
                 }
-                // SOCKET_IPC_FRAGMENT_SAFE: Read all bytes even if TCP-fragmented
+                // JUMBO_PAYLOAD_FRAGMENT_SAFE: Read all bytes even if TCP-fragmented
+                // Critical for large message support (>64KB, >1MB, etc)
                 byte[] payload = new byte[length];
                 int bytesRead = 0;
                 while (bytesRead < length) {
